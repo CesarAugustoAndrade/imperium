@@ -30,7 +30,13 @@ const Z_BY_ROW: f32 = 0.001;
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "IMPERIUM".into(),
+                ..default()
+            }),
+            ..default()
+        }))
         // Bevy Remote Protocol: query/mutate the live ECS over JSON-RPC (port
         // 15702). This is the runtime-agent hook — an agent can drive/inspect
         // the running battle. Register the sim components so they're queryable.
@@ -88,9 +94,9 @@ fn terrain_height(t: Terrain) -> f32 {
     match t {
         Terrain::Water => 0.0,
         Terrain::Plains => 3.0,
-        Terrain::Forest => 11.0,
-        Terrain::Hill => 26.0,
-        Terrain::Mountain => 46.0,
+        Terrain::Forest => 12.0,
+        Terrain::Hill => 32.0,
+        Terrain::Mountain => 60.0,
     }
 }
 
@@ -98,6 +104,14 @@ fn terrain_height(t: Terrain) -> f32 {
 fn wall_color(t: Terrain) -> Color {
     let c = terrain_color(t).to_srgba();
     Color::srgb(c.red * 0.45, c.green * 0.45, c.blue * 0.45)
+}
+
+/// Stable per-tile hash → picks a shade variant (fakes texture).
+fn tile_hash(q: i32, r: i32) -> u32 {
+    let mut h = (q.wrapping_mul(374761393) ^ r.wrapping_mul(668265263)) as u32;
+    h ^= h >> 13;
+    h = h.wrapping_mul(1274126177);
+    h ^ (h >> 16)
 }
 
 /// Flat-top axial → world pixels.
@@ -124,6 +138,22 @@ fn setup(
         }
     }
 
+    // A winding river down the central no-man's-land, with fords (land bridges)
+    // every few rows so the armies can still cross and clash. Water is flat →
+    // reads as a channel cut into the raised land.
+    for r in -GRID_R..=GRID_R {
+        if r.rem_euclid(10) < 2 {
+            continue; // ford
+        }
+        let cq = (6.0 * (r as f32 * 0.22).sin()) as i32;
+        for dq in 0..=1 {
+            let h = Hex::new(cq + dq, r);
+            if h.distance(Hex::new(0, 0)) > 1 {
+                terrain.set(h, Terrain::Water); // keep the central objective on land
+            }
+        }
+    }
+
     // 2.5D terrain: each hex is a flat top raised by its elevation, with a dark
     // south-facing cliff wall below. Tiles z-sort by screen row so front tiles
     // overlap the walls of those behind — the "viewed from below" look.
@@ -136,15 +166,32 @@ fn setup(
         Terrain::Mountain,
         Terrain::Water,
     ];
-    let top_mats: Vec<(Terrain, Handle<ColorMaterial>)> = terrains
+    // Per-terrain shade variants → per-tile tonal jitter that fakes texture.
+    let top_variants: Vec<(Terrain, Vec<Handle<ColorMaterial>>)> = terrains
         .iter()
-        .map(|&t| (t, materials.add(terrain_color(t))))
+        .map(|&t| {
+            let c = terrain_color(t).to_srgba();
+            let v = [0.80_f32, 0.90, 1.0, 1.10, 1.20]
+                .iter()
+                .map(|&f| {
+                    materials.add(Color::srgb(
+                        (c.red * f).min(1.0),
+                        (c.green * f).min(1.0),
+                        (c.blue * f).min(1.0),
+                    ))
+                })
+                .collect();
+            (t, v)
+        })
         .collect();
     let wall_mats: Vec<(Terrain, Handle<ColorMaterial>)> = terrains
         .iter()
         .map(|&t| (t, materials.add(wall_color(t))))
         .collect();
-    let top_for = |t: Terrain| top_mats.iter().find(|(k, _)| *k == t).unwrap().1.clone();
+    let top_for = |t: Terrain, q: i32, r: i32| {
+        let v = &top_variants.iter().find(|(k, _)| *k == t).unwrap().1;
+        v[tile_hash(q, r) as usize % v.len()].clone()
+    };
     let wall_for = |t: Terrain| wall_mats.iter().find(|(k, _)| *k == t).unwrap().1.clone();
 
     let hex_half_h = HEX_SIZE * 3.0_f32.sqrt() / 2.0;
@@ -166,7 +213,7 @@ fn setup(
             }
             commands.spawn((
                 Mesh2d(top_mesh.clone()),
-                MeshMaterial2d(top_for(t)),
+                MeshMaterial2d(top_for(t, q, r)),
                 Transform::from_xyz(base.x, base.y + h, z + 0.0005)
                     .with_rotation(Quat::from_rotation_z(FLAT_TOP)),
             ));
