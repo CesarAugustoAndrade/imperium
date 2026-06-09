@@ -23,6 +23,10 @@ const GRID_R: i32 = 34;
 const SEED: i32 = 7;
 /// Rotate a Bevy `RegularPolygon` (pointy-top by default) to flat-top.
 const FLAT_TOP: f32 = std::f32::consts::FRAC_PI_6;
+const TERRAIN_Z: f32 = -10.0;
+/// Tiny per-screen-row z step: front rows (lower on screen) sort above the
+/// cliff walls of the rows behind them — the 2.5D "viewed from below" stacking.
+const Z_BY_ROW: f32 = 0.001;
 
 fn main() {
     App::new()
@@ -78,6 +82,24 @@ fn terrain_color(t: Terrain) -> Color {
     }
 }
 
+/// Elevation in pixels — drives both the upward offset of the hex top and the
+/// height of its cliff wall. Mirrors hex-tactics: water flat, mountains tower.
+fn terrain_height(t: Terrain) -> f32 {
+    match t {
+        Terrain::Water => 0.0,
+        Terrain::Plains => 3.0,
+        Terrain::Forest => 11.0,
+        Terrain::Hill => 26.0,
+        Terrain::Mountain => 46.0,
+    }
+}
+
+/// Darkened terrain color for the shaded cliff face.
+fn wall_color(t: Terrain) -> Color {
+    let c = terrain_color(t).to_srgba();
+    Color::srgb(c.red * 0.45, c.green * 0.45, c.blue * 0.45)
+}
+
 /// Flat-top axial → world pixels.
 fn hex_to_world(h: Hex) -> Vec2 {
     let x = HEX_SIZE * 1.5 * h.q as f32;
@@ -102,33 +124,77 @@ fn setup(
         }
     }
 
-    // Static hex grid, flat-top tiles inset so the dark clear color reads as
-    // grid lines. Each tile colored by its terrain.
-    let grid_mesh = meshes.add(RegularPolygon::new(HEX_SIZE * 0.92, 6));
-    let mats: Vec<(Terrain, Handle<ColorMaterial>)> = [
+    // 2.5D terrain: each hex is a flat top raised by its elevation, with a dark
+    // south-facing cliff wall below. Tiles z-sort by screen row so front tiles
+    // overlap the walls of those behind — the "viewed from below" look.
+    let top_mesh = meshes.add(RegularPolygon::new(HEX_SIZE * 0.96, 6));
+    let wall_mesh = meshes.add(Rectangle::new(1.0, 1.0));
+    let terrains = [
         Terrain::Plains,
         Terrain::Forest,
         Terrain::Hill,
         Terrain::Mountain,
         Terrain::Water,
-    ]
-    .into_iter()
-    .map(|t| (t, materials.add(terrain_color(t))))
-    .collect();
-    let mat_for = |t: Terrain| mats.iter().find(|(k, _)| *k == t).unwrap().1.clone();
+    ];
+    let top_mats: Vec<(Terrain, Handle<ColorMaterial>)> = terrains
+        .iter()
+        .map(|&t| (t, materials.add(terrain_color(t))))
+        .collect();
+    let wall_mats: Vec<(Terrain, Handle<ColorMaterial>)> = terrains
+        .iter()
+        .map(|&t| (t, materials.add(wall_color(t))))
+        .collect();
+    let top_for = |t: Terrain| top_mats.iter().find(|(k, _)| *k == t).unwrap().1.clone();
+    let wall_for = |t: Terrain| wall_mats.iter().find(|(k, _)| *k == t).unwrap().1.clone();
 
+    let hex_half_h = HEX_SIZE * 3.0_f32.sqrt() / 2.0;
+    let wall_w = HEX_SIZE * 1.5;
     for q in -GRID_Q..=GRID_Q {
         for r in -GRID_R..=GRID_R {
-            let p = hex_to_world(Hex::new(q, r));
+            let t = terrain.get(Hex::new(q, r));
+            let base = hex_to_world(Hex::new(q, r));
+            let h = terrain_height(t);
+            let z = TERRAIN_Z + (-base.y) * Z_BY_ROW;
+            if h > 0.5 {
+                let wall_h = hex_half_h + h;
+                let wy = (base.y + h) - wall_h / 2.0;
+                commands.spawn((
+                    Mesh2d(wall_mesh.clone()),
+                    MeshMaterial2d(wall_for(t)),
+                    Transform::from_xyz(base.x, wy, z).with_scale(Vec3::new(wall_w, wall_h, 1.0)),
+                ));
+            }
             commands.spawn((
-                Mesh2d(grid_mesh.clone()),
-                MeshMaterial2d(mat_for(terrain.get(Hex::new(q, r)))),
-                Transform::from_xyz(p.x, p.y, -1.0).with_rotation(Quat::from_rotation_z(FLAT_TOP)),
+                Mesh2d(top_mesh.clone()),
+                MeshMaterial2d(top_for(t)),
+                Transform::from_xyz(base.x, base.y + h, z + 0.0005)
+                    .with_rotation(Quat::from_rotation_z(FLAT_TOP)),
             ));
         }
     }
 
-    let mesh = meshes.add(RegularPolygon::new(HEX_SIZE * 0.6, 6));
+    // Central objective ("mid"): a tall gold marker at the map centre, around
+    // which the battle is fought.
+    {
+        let h = 42.0;
+        let base = hex_to_world(Hex::new(0, 0));
+        let z = TERRAIN_Z + (-base.y) * Z_BY_ROW + 0.05;
+        let wall_h = hex_half_h + h;
+        commands.spawn((
+            Mesh2d(wall_mesh.clone()),
+            MeshMaterial2d(materials.add(Color::srgb(0.45, 0.38, 0.12))),
+            Transform::from_xyz(base.x, (base.y + h) - wall_h / 2.0, z)
+                .with_scale(Vec3::new(wall_w, wall_h, 1.0)),
+        ));
+        commands.spawn((
+            Mesh2d(meshes.add(RegularPolygon::new(HEX_SIZE, 6))),
+            MeshMaterial2d(materials.add(Color::srgb(0.88, 0.74, 0.28))),
+            Transform::from_xyz(base.x, base.y + h, z + 0.001)
+                .with_rotation(Quat::from_rotation_z(FLAT_TOP)),
+        ));
+    }
+
+    let mesh = meshes.add(RegularPolygon::new(HEX_SIZE * 0.42, 6));
     // One material per (team, kind): team hue, brightness by kind.
     let mut umat: Vec<(Team, Kind, Handle<ColorMaterial>)> = Vec::new();
     for team in [Team::Red, Team::Blue] {
@@ -213,12 +279,16 @@ fn control(keys: Res<ButtonInput<KeyCode>>, mut orders: ResMut<Orders>) {
     }
 }
 
-/// Mirror the sim's authoritative `Hex` onto the render `Transform` each frame.
-fn sync_transforms(mut q: Query<(&Hex, &mut Transform)>) {
+/// Mirror the sim's authoritative `Hex` onto the render `Transform` each frame,
+/// lifting each unit onto the elevation of the tile it stands on and z-sorting
+/// it above the terrain (front units over back units).
+fn sync_transforms(mut q: Query<(&Hex, &mut Transform)>, terrain: Res<TerrainMap>) {
     for (h, mut t) in &mut q {
         let p = hex_to_world(*h);
+        let elev = terrain_height(terrain.get(*h));
         t.translation.x = p.x;
-        t.translation.y = p.y;
+        t.translation.y = p.y + elev + 3.0;
+        t.translation.z = 1.0 + (-p.y) * Z_BY_ROW;
     }
 }
 
