@@ -15,8 +15,8 @@ use sim_core::{
 };
 
 const HEX_SIZE: f32 = 12.0;
-const ARMY_COLS: i32 = 28;
-const ARMY_ROWS: i32 = 54;
+const ARMY_DEPTH: i32 = 20; // ranks front→back, along the vertical advance axis (r)
+const ARMY_WIDTH: i32 = 44; // battle-line width, along q
 const GAP: i32 = 12; // hexes between the two armies' inner edges
 const GRID_Q: i32 = 40;
 const GRID_R: i32 = 34;
@@ -129,25 +129,26 @@ fn setup(
 ) {
     commands.spawn(Camera2d);
 
-    // Carve the two deploy zones to Plains so units never spawn stuck.
-    for col in 0..ARMY_COLS {
-        for row in 0..ARMY_ROWS {
-            let r = row - ARMY_ROWS / 2;
-            terrain.set(Hex::new(-(GAP / 2) - 1 - col, r), Terrain::Plains);
-            terrain.set(Hex::new((GAP / 2) + 1 + col, r), Terrain::Plains);
+    // Carve the deploy zones to Plains so units never spawn stuck. Red deploys
+    // at the bottom (+r), Blue at the top (−r); they advance vertically.
+    for depth in 0..ARMY_DEPTH {
+        for w in 0..ARMY_WIDTH {
+            let q = w - ARMY_WIDTH / 2;
+            terrain.set(Hex::new(q, (GAP / 2) + 1 + depth), Terrain::Plains);
+            terrain.set(Hex::new(q, -(GAP / 2) - 1 - depth), Terrain::Plains);
         }
     }
 
-    // A winding river down the central no-man's-land, with fords (land bridges)
-    // every few rows so the armies can still cross and clash. Water is flat →
-    // reads as a channel cut into the raised land.
-    for r in -GRID_R..=GRID_R {
-        if r.rem_euclid(10) < 2 {
+    // A winding river ACROSS the central no-man's-land (horizontal, since the
+    // armies fight vertically), with fords so they can still cross. Water is
+    // flat → reads as a channel cut into the raised land.
+    for q in -GRID_Q..=GRID_Q {
+        if q.rem_euclid(10) < 2 {
             continue; // ford
         }
-        let cq = (6.0 * (r as f32 * 0.22).sin()) as i32;
-        for dq in 0..=1 {
-            let h = Hex::new(cq + dq, r);
+        let cr = (6.0 * (q as f32 * 0.22).sin()) as i32;
+        for dr in 0..=1 {
+            let h = Hex::new(q, cr + dr);
             if h.distance(Hex::new(0, 0)) > 1 {
                 terrain.set(h, Terrain::Water); // keep the central objective on land
             }
@@ -251,16 +252,18 @@ fn setup(
     }
     let mat_for = |team, kind| umat.iter().find(|(t, k, _)| *t == team && *k == kind).unwrap().2.clone();
 
-    // Red on the left, Blue on the right; a gap in the middle. Cavalry forms
-    // the front (inner columns), infantry the centre, skirmishers the rear.
+    // Red at the bottom (+r), Blue at the top (−r); they advance vertically and
+    // clash in the middle. Cavalry forms the front (inner ranks), infantry the
+    // centre, skirmishers the rear.
     let mut n = 0;
-    for col in 0..ARMY_COLS {
-        let kind = kind_for(col, ARMY_COLS);
-        for row in 0..ARMY_ROWS {
-            let r = row - ARMY_ROWS / 2;
-            let (rq, bq) = (-(GAP / 2) - 1 - col, (GAP / 2) + 1 + col);
-            spawn_unit(&mut commands, &mesh, &mat_for(Team::Red, kind), Team::Red, kind, Hex::new(rq, r));
-            spawn_unit(&mut commands, &mesh, &mat_for(Team::Blue, kind), Team::Blue, kind, Hex::new(bq, r));
+    for depth in 0..ARMY_DEPTH {
+        let kind = kind_for(depth, ARMY_DEPTH);
+        for w in 0..ARMY_WIDTH {
+            let q = w - ARMY_WIDTH / 2;
+            let red = Hex::new(q, (GAP / 2) + 1 + depth);
+            let blue = Hex::new(q, -(GAP / 2) - 1 - depth);
+            spawn_unit(&mut commands, &mesh, &mat_for(Team::Red, kind), Team::Red, kind, red);
+            spawn_unit(&mut commands, &mesh, &mat_for(Team::Blue, kind), Team::Blue, kind, blue);
             n += 2;
         }
     }

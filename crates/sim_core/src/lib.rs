@@ -516,8 +516,8 @@ fn kite_step(
 /// Fallback march target: the far side of the field the enemy came from.
 fn enemy_line(team: Team) -> Hex {
     match team {
-        Team::Red => Hex::new(30, 0),
-        Team::Blue => Hex::new(-30, 0),
+        Team::Red => Hex::new(0, -30), // Red deploys at +r; enemy lies toward −r (up the screen)
+        Team::Blue => Hex::new(0, 30), // Blue at −r; enemy toward +r (down)
     }
 }
 
